@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictive-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: predictive-app
+  template:
+    metadata:
+      labels:
+        app: predictive-app
+    spec:
+      containers:
+        - name: predictive-app
+          image: predictive-autoscaling-app:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5000
