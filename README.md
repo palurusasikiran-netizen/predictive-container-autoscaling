@@ -1,573 +1,463 @@
-# Adaptive Multi-Resource Deep Learning-Based Predictive Container Auto-Scaling Framework for Kubernetes
+# Predictive Container Autoscaling Using LSTM and Kubernetes
 
-## Overview
+![Predictive Container Autoscaling project banner](assets/github-banner.png)
 
-This project presents an **Adaptive Multi-Resource Deep Learning-Based Predictive Container Auto-Scaling Framework for Kubernetes**.
+This repository contains an experimental framework for forecasting CPU, memory, and network usage from historical workload traces and using predictions in a Kubernetes scaling prototype. The project separates offline model development from a manually invoked live monitoring and scaling workflow.
 
-The main objective is to predict future resource requirements of containerized applications using historical workload data and make proactive scaling decisions.
-
-Traditional reactive autoscaling responds after resource utilization increases. Our approach uses a Long Short-Term Memory (LSTM) deep learning model to predict three important resource metrics:
-
-- CPU Usage
-- Memory Usage
-- Network Throughput
-
-The predicted resource values are processed by a weighted scaling controller to generate scaling decisions such as **SCALE UP, KEEP, and SCALE DOWN**.
-
-The framework integrates Docker, Kubernetes, Minikube, Prometheus, and Grafana to demonstrate a predictive autoscaling prototype.
-
----
-
-## Problem Statement
-
-Containerized applications experience changing workloads, which can lead to fluctuating CPU, memory, and network requirements.
-
-Traditional reactive autoscaling generally makes decisions based on current resource utilization. This may introduce a delay between an increase in workload and the corresponding scaling action.
-
-Additionally, relying only on CPU utilization may overlook memory and network resource requirements.
-
-This project addresses these challenges by predicting multiple resource metrics using an LSTM model and using the predictions to support adaptive Kubernetes container scaling decisions.
-
----
+Traditional reactive scaling responds to observed resource pressure after it appears. Forecasting can provide an earlier signal, but a forecast alone does not guarantee a better scaling outcome. This project explores that idea with an LSTM model and records a separate offline comparison of CPU-threshold decisions. It is a research prototype, not a production-ready autoscaler.
 
 ## Project Objectives
 
-1. Study existing reactive and predictive container autoscaling techniques.
-2. Prepare historical virtual machine workload data for deep learning.
-3. Develop an LSTM model to predict CPU, memory, and network usage.
-4. Implement a model fine-tuning mechanism to examine prediction improvements.
-5. Develop a weighted multi-resource scaling decision mechanism.
-6. Integrate the predictive controller with Kubernetes.
-7. Use Prometheus and Grafana for resource monitoring and visualization.
-8. Evaluate prediction performance and compare predictive and reactive CPU-threshold decisions.
+- Prepare historical VM telemetry for multivariate, next-step forecasting.
+- Train and evaluate an LSTM model for CPU, memory, and network measurements.
+- Explore validation-window and Prometheus-fed model updates.
+- Compare a simple reactive CPU threshold with the same threshold applied to predicted CPU values.
+- Demonstrate a Kubernetes controller that queries Prometheus and can adjust a Deployment replica count.
 
----
+## Key Features
+
+The following functionality is present in the repository source and artifacts:
+
+- **Multivariate LSTM forecasting:** one-step predictions for CPU, memory, and network from 12 prior observations.
+- **Historical data pipeline:** combines the included raw Bitbrains CSV files, cleans required columns, and generates per-VM normalized sequences.
+- **Model training and evaluation:** trains a Keras LSTM, saves best-checkpoint and final models, and calculates prediction errors on saved test sequences.
+- **Experimental model updates:** `model/adaptive_update.py` fine-tunes on a selected validation-data window; `model/live_adaptive_update.py` contains a separate Prometheus-fed update experiment.
+- **Reactive/predictive CPU rule comparison:** compares actual and predicted CPU against a 65% threshold and writes a decision table and graph.
+- **Prometheus-backed scaling prototype:** `scaling/auto_scaler.py` queries recent CPU, memory, and network series, calculates weighted pressure, applies replica bounds, confirmation count, and cooldown, then invokes `kubectl scale` when its conditions are met.
+- **Containerized sample service:** a small Flask application with `/` and `/health` endpoints, packaged by the included Dockerfile.
+- **Kubernetes manifests:** a Deployment and NodePort Service for the sample Flask application.
+- **Saved artifacts:** raw and cleaned data, processed NumPy arrays, scalers, Keras models, result CSVs, and generated graphs are included.
+
+Prometheus and Kubernetes are external runtime requirements. This repository does not include a Prometheus scrape configuration or Grafana dashboard. The project does not implement a continuously running controller loop; the scaling script is invoked as a command.
 
 ## System Architecture
 
-The framework consists of two connected workflows:
-
-### 1. Offline Model Development
-
-Historical VM workload data is processed and used to train the LSTM model.
-
-**Workflow:**
-
-Bitbrains VM Workload Dataset → Data Preprocessing → Chronological Data Splitting → Normalization → Sequence Generation → LSTM Training → Model Evaluation → Fine-Tuning
-
-### 2. Live Predictive Autoscaling Prototype
-
-The trained model is integrated with a Kubernetes-based monitoring and scaling workflow.
-
-**Workflow:**
-
-Containerized Application → Kubernetes / Minikube → Prometheus Monitoring → LSTM Prediction → Weighted Scaling Controller → Kubernetes Replica Scaling
-
-Grafana is used to visualize the collected resource metrics.
-
----
-
-## Dataset
-
-We use the **GWA-T-12 Bitbrains fastStorage VM Workload Trace Dataset** for historical resource prediction.
-
-The dataset contains recorded virtual machine workload information.
-
-### Dataset Summary
-
-| Description | Details |
-|---|---|
-| Dataset | GWA-T-12 Bitbrains fastStorage |
-| CSV Files Used | 10 |
-| Cleaned Dataset Rows | 146,393 |
-| Resource Features | 3 |
-| Sequence Length | 12 observations |
-| Test Sequences | 21,844 |
-
-### Selected Features
-
-| Feature | Description |
-|---|---|
-| CPU Usage (%) | CPU utilization of the virtual machine |
-| Memory Usage (KB) | Memory consumed by the virtual machine |
-| Network Throughput (KB/s) | Combined received and transmitted network throughput |
-
-Network throughput is calculated by adding received and transmitted network throughput.
-
-### Why This Dataset?
-
-- Provides historical virtual machine workload observations.
-- Supports time-series resource prediction.
-- Contains CPU, memory, and network-related measurements.
-- Allows chronological training, validation, and testing.
-- Provides a workload trace for evaluating resource prediction models.
-
----
-
-## Data Preprocessing
-
-The raw workload data is prepared before being provided to the LSTM model.
-
-The preprocessing pipeline performs the following operations:
-
-1. Loads the selected CSV workload files.
-2. Cleans column names and data values.
-3. Converts required columns into numeric values.
-4. Calculates total network throughput.
-5. Assigns VM identifiers.
-6. Removes rows with missing required values.
-7. Combines the cleaned data into a single dataset.
-8. Sorts the observations by VM identifier and timestamp.
-
-The cleaned dataset is saved as:
-
-`dataset/clean_dataset.csv`
-
-### Data Splitting
-
-Each VM's observations are divided chronologically:
-
-| Dataset | Percentage | Purpose |
-|---|---:|---|
-| Training | 70% | Train the LSTM model |
-| Validation | 15% | Monitor and tune the model |
-| Testing | 15% | Evaluate the trained model |
-
-### Normalization
-
-We use **MinMaxScaler** to normalize CPU, memory, and network features.
-
-The scaler is fitted only on the training data and then applied to the corresponding validation and test data.
-
-A separate scaler is maintained for each VM.
-
-### Sequence Generation
-
-The model uses a sliding-window approach.
-
-- Input: Previous 12 observations.
-- Features per observation: CPU, memory, and network.
-- Output: Next observation's three resource values.
-
-Therefore, the input shape for one sequence is:
-
-`(12, 3)`
-
-The sequence generation process is performed independently within the training, validation, and test splits.
-
----
-
-## LSTM Model Architecture
-
-We use a multi-output Long Short-Term Memory (LSTM) neural network to learn temporal patterns in historical resource usage.
-
-### Model Configuration
-
-| Layer | Configuration | Purpose |
-|---|---|---|
-| Input | 12 time steps, 3 features | Receives historical resource observations |
-| LSTM | 64 units | Learns temporal patterns |
-| Dropout | 0.2 | Helps reduce overfitting |
-| Dense | 32 neurons, ReLU | Processes learned features |
-| Output | 3 neurons, Linear | Predicts CPU, memory, and network usage |
-
-**Total trainable parameters:** 58,763
-
-### Model Output
-
-For each input sequence, the model predicts:
-
-1. Next CPU usage value.
-2. Next memory usage value.
-3. Next network throughput value.
-
-### Training Configuration
-
-- Deep Learning Framework: TensorFlow / Keras
-- Model: LSTM
-- Optimizer: Adam
-- Loss Function: Mean Squared Error (MSE)
-- Early Stopping: Used during training
-- Model Checkpointing: Used to save the best model
-
----
-
-## Adaptive Fine-Tuning
-
-After training the baseline LSTM model, we perform an additional fine-tuning experiment.
-
-The saved baseline model is trained for five additional epochs using a selected portion of the validation data.
-
-### Fine-Tuning Configuration
-
-| Parameter | Value |
-|---|---|
-| Initial Model | Baseline LSTM |
-| Additional Epochs | 5 |
-| Learning Rate | 0.0001 |
-| Fine-Tuning Data | Selected final 20% of concatenated validation arrays |
-| Shuffling | Disabled |
-
-The objective is to examine whether additional training on the selected validation window improves prediction performance.
-
-The updated model is saved separately as:
-
-`adaptive_lstm.keras`
-
-**Note:** This implementation demonstrates validation-window fine-tuning. It is not continuous online learning from live production workloads.
-
----
-
-## Multi-Resource Scaling Decision Mechanism
-
-The scaling controller uses predicted CPU, memory, and network values to calculate a weighted resource-pressure score.
-
-### Resource Weights
-
-| Resource | Weight |
-|---|---:|
-| CPU | 0.50 |
-| Memory | 0.30 |
-| Network | 0.20 |
-
-### Weighted Pressure Formula
-
-`Pressure = (0.50 × CPU) + (0.30 × Memory) + (0.20 × Network)`
-
-The resource predictions are normalized and processed by the controller before calculating the weighted score.
-
-### Scaling Thresholds
-
-| Condition | Scaling Decision |
-|---|---|
-| Pressure ≥ 0.65 | SCALE UP |
-| Pressure ≤ 0.35 | SCALE DOWN |
-| 0.35 < Pressure < 0.65 | KEEP |
-
-### Scaling Safeguards
-
-The live controller includes:
-
-- Minimum replica count: 1
-- Maximum replica count: 5
-- Three consecutive matching decisions before scaling
-- 300-second cooldown between scaling actions
-
-These safeguards help prevent unnecessary or rapid replica changes.
-
----
+The diagram separates offline model development from the live prototype. The online scripts require a separately configured cluster and Prometheus server. The controller makes a scaling decision when run; the return arrow represents later workload metrics, not a continuously running feedback service.
+
+```mermaid
+flowchart LR
+  subgraph OFFLINE["Offline model development"]
+    RAW[("Bitbrains raw CSV files")]
+    PRE["preprocess.py<br/>clean, combine, sort by VM and timestamp"]
+    CLEAN[("dataset/clean_dataset.csv")]
+    SEQ["prepare_sequences.py<br/>per-VM chronological split, train-only scaling,<br/>12-step sequence generation"]
+    ARR[("X/y train, validation and test arrays")]
+    TRAIN["train_lstm.py<br/>LSTM training"]
+    BASE[("best_lstm.keras<br/>lstm_model.keras")]
+    EVAL["evaluate_lstm.py<br/>test predictions and error metrics"]
+    PRED[("test_predictions.csv")]
+    OFFADAPT["adaptive_update.py<br/>validation-window fine-tuning"]
+    OFFMODEL[("adaptive_lstm.keras")]
+    RAW --> PRE --> CLEAN --> SEQ --> ARR --> TRAIN --> BASE
+    BASE --> EVAL --> PRED
+    BASE --> OFFADAPT --> OFFMODEL
+  end
+
+  subgraph LIVE["Live monitoring and scaling prototype"]
+    APP["Flask sample application"] --> K8S["Kubernetes Deployment and Service"]
+    K8S -->|"container resource metrics"| PROM["External Prometheus<br/>scrape setup required"]
+    PROM -->|"range queries"| CTRL["auto_scaler.py"]
+    PROM -.->|"optional update input"| LIVEADAPT["live_adaptive_update.py"]
+    BASE -.-> LIVEADAPT
+    LIVEADAPT -.-> LIVEMODEL[("live_adaptive_lstm.keras")]
+    LIVEMODEL --> PREDICT["LSTM next-step prediction"]
+    CTRL --> CAL["Recent-window MinMax calibration"] --> PREDICT
+    PREDICT --> PRESS["Weighted CPU/memory/network pressure"]
+    PRESS --> GUARD["Thresholds, 3 matching decisions,<br/>1-5 replica bounds, 300 s cooldown"]
+    GUARD -->|"kubectl scale, when conditions pass"| K8S
+  end
+```
+
+The controller uses `model/live_adaptive_lstm.keras` as its model file. The historical training pipeline uses per-VM scalers; the live controller instead fits a MinMax scaler to its recent Prometheus window. The optional live update script has its own data and scaler assumptions, described below.
 
 ## Technology Stack
 
-| Technology | Purpose |
-|---|---|
-| Python | Main programming language |
-| Pandas | Dataset preprocessing |
-| NumPy | Numerical operations and sequence preparation |
-| Scikit-learn | MinMaxScaler and evaluation utilities |
-| TensorFlow / Keras | LSTM model development and training |
-| Joblib | Saving and loading VM-specific scalers |
-| Docker | Application containerization |
-| Kubernetes | Container orchestration and replica management |
-| Minikube | Local Kubernetes environment |
-| Prometheus | Resource metrics collection |
-| Grafana | Metrics visualization |
-| Git and GitHub | Version control and project hosting |
-| VS Code | Development environment |
+| Category | Technologies verified in source or configuration | Notes |
+|---|---|---|
+| Language and runtime | Python; `python:3.12-slim` in `app/Dockerfile` | The analytics scripts do not pin a Python version. |
+| Machine learning | TensorFlow / Keras; LSTM, Dense, Dropout; scikit-learn | TensorFlow trains and loads the models; scikit-learn supplies `MinMaxScaler` and metrics. No root-level pinned ML requirements file is provided. |
+| Data processing | pandas, NumPy, joblib | CSV processing, arrays/sequences, and serialized VM scalers. |
+| Monitoring | Prometheus HTTP API; `requests` | The scripts query Prometheus at `http://localhost:9090`; server and scrape configuration are external. |
+| Containerization | Docker; Flask | `app/requirements.txt` pins Flask to `3.1.2`. |
+| Orchestration | Kubernetes, `kubectl`; Minikube for the local prototype | The repository includes only the application Deployment and Service manifests. |
+| Visualization | Matplotlib | Used by the plotting and comparison scripts. |
+| Version control | Git and GitHub | Repository hosting and source history. |
 
----
-
-## Experimental Results
-
-### 1. Baseline LSTM Evaluation
-
-The baseline LSTM model is evaluated using **21,844 held-out test sequences**.
-
-The following results represent prediction errors in the original resource units.
-
-| Resource | MAE | RMSE |
-|---|---:|---:|
-| CPU | 0.278457 percentage points | 2.698687 percentage points |
-| Memory | 48,832.526582 KB | 465,576.861255 KB |
-| Network | 11.400737 KB/s | 93.652781 KB/s |
-
-**MAE (Mean Absolute Error):** Measures the average absolute difference between actual and predicted values.
-
-**RMSE (Root Mean Squared Error):** Gives more weight to larger prediction errors.
-
-Lower values indicate smaller prediction errors.
-
-### 2. Baseline vs Fine-Tuned Model
-
-The following comparison uses normalized evaluation metrics.
-
-| Metric | Baseline LSTM | Fine-Tuned LSTM |
-|---|---:|---:|
-| Overall MAE | 0.006441 | 0.005036 |
-| Overall RMSE | 0.169601 | 0.169636 |
-
-**Observations:**
-
-- Overall MAE decreased by approximately 21.82%.
-- Overall RMSE increased slightly by approximately 0.02%.
-- Fine-tuning produced mixed results rather than improving every metric.
-
-### 3. Offline CPU-Threshold Decision Comparison
-
-We performed a separate offline experiment to compare reactive and predictive CPU-threshold decisions.
-
-The threshold used in this experiment is **65% CPU utilization**.
-
-- Reactive approach: Uses actual CPU usage.
-- Predictive approach: Uses LSTM-predicted CPU usage.
-
-If CPU usage is at least 65%, the corresponding rule produces SCALE UP; otherwise, it produces KEEP.
-
-#### Decision Comparison
-
-| Reactive Label | Predictive KEEP | Predictive SCALE UP |
-|---|---:|---:|
-| Reactive KEEP | 21,737 | 4 |
-| Reactive SCALE UP | 37 | 66 |
-
-### Key Observations
-
-- Total test samples: 21,844
-- Matching decisions: 21,803
-- Overall agreement: 99.81%
-- Reactive SCALE UP labels: 103
-- Predictive SCALE UP labels: 70
-- Reactive SCALE UP samples also identified by predictive rule: 66
-- Reactive SCALE UP samples labelled KEEP by predictive rule: 37
-
-**Important Interpretation:**
-
-The 99.81% value represents overall decision agreement, not LSTM prediction accuracy.
-
-The agreement is dominated by the large KEEP class. This offline CPU-only comparison does not prove improved live autoscaling, lower cloud cost, better resource utilization, or preserved application service quality.
-
-The complete project also includes a separate multi-resource scaling controller that uses CPU, memory, and network predictions.
-
----
-
-## Kubernetes Integration
-
-The project includes a local Kubernetes prototype.
-
-### Implementation Workflow
-
-1. The application is packaged using Docker.
-2. The containerized application is deployed in Minikube.
-3. Kubernetes manages the application Pods and Deployment.
-4. Prometheus collects resource metrics.
-5. The Python controller queries Prometheus for recent metrics.
-6. The LSTM model generates resource predictions.
-7. The weighted scaling controller determines the scaling action.
-8. After the required confirmation and cooldown conditions, the controller can execute a Kubernetes replica-scaling command.
-9. Grafana visualizes the monitoring metrics.
-
-The live prototype demonstrates the integration of prediction, monitoring, and Kubernetes replica management.
-
-It should not be interpreted as a production-scale performance benchmark.
-
----
+The only checked-in `requirements.txt` is `app/requirements.txt` for the Flask container. Analytics dependencies are evident from imports but are **not pinned in a root requirements file**. The Docker base image specifies Python 3.12; Flask is pinned to 3.1.2. Other library versions are not specified by this project.
 
 ## Project Structure
 
-The following is a representative organization of the main project modules:
+This tree reflects the prepared repository, including the existing local banner asset. `.git/` internals are omitted.
 
 ```text
 predictive-container-autoscaling/
-│
+├── .gitignore
+├── README.md
+├── assets/
+│   └── github-banner.png
+├── app/
+│   ├── Dockerfile
+│   ├── app.py
+│   └── requirements.txt
 ├── dataset/
-│   ├── raw/
+│   ├── clean_dataset.csv
 │   ├── processed/
-│   └── clean_dataset.csv
-│
-├── preprocessing/
-│   ├── preprocess.py
-│   └── prepare_sequences.py
-│
+│   │   ├── scalers.pkl
+│   │   ├── scaling_decisions.csv
+│   │   ├── test_predictions.csv
+│   │   ├── test_vm_ids.npy
+│   │   ├── X_test.npy
+│   │   ├── X_train.npy
+│   │   ├── X_val.npy
+│   │   ├── y_test.npy
+│   │   ├── y_train.npy
+│   │   └── y_val.npy
+│   └── raw/
+│       ├── 1.csv
+│       ├── 2.csv
+│       ├── 3.csv
+│       ├── 4.csv
+│       ├── 5.csv
+│       ├── 6.csv
+│       ├── 7.csv
+│       ├── 8.csv
+│       ├── 9.csv
+│       └── 10.csv
+├── graphs/
+│   ├── cpu_actual_vs_predicted.png
+│   ├── memory_actual_vs_predicted.png
+│   ├── network_actual_vs_predicted.png
+│   ├── plot_predictions.py
+│   ├── reactive_vs_predictive.png
+│   ├── review3_cpu_window.png
+│   └── review3_decision_matrix.png
+├── analyze_duplicate_features.py
+├── check_all_vm_duplicates.py
+├── check_duplicate_distribution.py
+├── check_predictions.py
+├── check_raw_data.py
+├── check_raw_timestamps.py
+├── check_timestamp_pattern.py
+├── check_timestamps.py
+├── inspect_conflicts_all_vms.py
+├── inspect_duplicate_boundary.py
+├── inspect_duplicates.py
+├── k8s/
+│   ├── deployment.yaml
+│   └── service.yaml
 ├── model/
-│   ├── train_lstm.py
-│   ├── evaluate_lstm.py
+│   ├── adaptive_lstm.keras
 │   ├── adaptive_update.py
-│   └── compare_models.py
-│
-├── scaling/
-│   ├── scaling_decision.py
-│   └── auto_scaler.py
-│
-├── results/
-│
-├── Kubernetes configuration files
-│
-└── README.md
+│   ├── best_lstm.keras
+│   ├── compare_models.py
+│   ├── evaluate_lstm.py
+│   ├── live_adaptive_lstm.keras
+│   ├── live_adaptive_update.py
+│   ├── lstm_model.keras
+│   └── train_lstm.py
+├── monitoring/
+│   ├── live_prediction.py
+│   └── prometheus_reader.py
+├── preprocessing/
+│   ├── prepare_sequences.py
+│   └── preprocess.py
+└── scaling/
+    ├── auto_scaler.py
+    ├── reactive_vs_predictive.py
+    ├── reactive_vs_predictive_results.csv
+    ├── scaler_state.json
+    ├── scaling_decision.py
+    └── scaling/
+        └── review3_visualizations.py
 ```
 
-The exact directory and configuration-file names may differ in the final repository.
+### Folder and script guide
 
----
+- `app/`: Flask sample app, its Flask dependency pin, and container recipe.
+- `dataset/raw/`: ten input CSV traces. `dataset/clean_dataset.csv` is the combined cleaned data; `dataset/processed/` contains per-split arrays, scalers, predictions, and scaling decisions.
+- `preprocessing/preprocess.py`: cleans and combines raw CSV files into the clean dataset.
+- `preprocessing/prepare_sequences.py`: makes per-VM chronological splits, fits scalers on training portions, and writes sequence arrays.
+- `model/train_lstm.py`: trains the baseline network and saves the best checkpoint and final epoch model.
+- `model/evaluate_lstm.py`: predicts the test set, converts predictions back with per-VM scalers, reports metrics, and writes `test_predictions.csv`.
+- `model/adaptive_update.py`: fine-tunes the baseline on the final 20% of the concatenated validation arrays and saves `adaptive_lstm.keras`.
+- `model/live_adaptive_update.py`: experimental Prometheus-fed update path; it uses the VM 1 scaler and writes `live_adaptive_lstm.keras`.
+- `model/compare_models.py`: compares baseline and validation-window-updated models on the held-out test arrays; it prints metrics but does not save a comparison-results file.
+- `monitoring/`: Prometheus query helper and a one-shot live prediction script.
+- `scaling/scaling_decision.py`: applies weighted decisions to offline model predictions and writes a decision CSV.
+- `scaling/reactive_vs_predictive.py`: applies a 65% CPU threshold to actual and predicted CPU, writes the decision table, and generates the comparison graph.
+- `scaling/auto_scaler.py`: one-shot live predictive scaling controller; its final action can call `kubectl scale`.
+- `graphs/`: generated offline and review visualizations, plus the plotting script.
+- `k8s/`: Kubernetes Deployment and NodePort Service for the Flask sample app. There are no Prometheus or Grafana manifests in this repository.
+- Root `check_*.py`, `inspect_*.py`, and `analyze_duplicate_features.py`: data quality, timestamp, duplicate, and prediction inspection utilities.
 
-## Running the Project
+## Dataset and Preprocessing
+
+The included dataset is the **GWA-T-12 Bitbrains fastStorage VM workload trace**. The repository contains ten raw tab-separated CSV files (`dataset/raw/1.csv` through `10.csv`) and a generated `dataset/clean_dataset.csv` with **146,393 data rows** (excluding its header).
+
+The preprocessing script reads the raw files, trims column names and values, converts the required timestamp, CPU, memory, and received/transmitted network fields to numeric data, adds received and transmitted throughput into one network feature, assigns each file stem as `VM_ID`, drops rows with missing required values, combines the files, and sorts by VM and timestamp. It does not deduplicate rows; root inspection scripts analyze duplicates and timestamp patterns.
+
+The three model features are:
+
+| Feature | Source representation |
+|---|---|
+| CPU usage | `CPU usage [%]` |
+| Memory usage | `Memory usage [KB]` |
+| Network throughput | Received plus transmitted throughput, in `KB/s` |
+
+For each VM, `prepare_sequences.py` takes chronological portions of 70% for training, 15% for validation, and the remainder for testing. A separate `MinMaxScaler` is fitted on each VM's training portion and applied to that VM's validation and test portions. It then creates sliding windows of 12 observations as input and the next observation's three features as the target. Sequences are generated separately inside each split, so windows do not cross split boundaries. The saved test arrays contain **21,844 sequences**.
+
+The code sorts by timestamp but does not resample to a fixed time interval. A 12-observation window therefore does not guarantee a fixed elapsed duration; the preprocessing script also retains duplicate records unless a required value is missing.
+
+### CPU metric comparability limitation
+
+The historical model feature is `CPU usage [%]` from the Bitbrains VM trace. The live Prometheus queries in `monitoring/live_prediction.py`, `model/live_adaptive_update.py`, and `scaling/auto_scaler.py` calculate:
+
+```promql
+sum(rate(container_cpu_usage_seconds_total{...}[5m])) * 100
+```
+
+`rate(container_cpu_usage_seconds_total[5m])` is measured in CPU cores used; multiplying by 100 expresses that rate as a percentage of **one CPU core**. It is not necessarily the same denominator or utilization definition as the Bitbrains dataset's CPU percentage. Consequently, live CPU values and predictions should not be directly compared with historical CPU percentages as though they were identical, and the live prototype's CPU behavior needs unit/normalization alignment before meaningful cross-environment evaluation. This README documents the mismatch; the scaling implementation is unchanged.
+
+The live scaler also fits a separate MinMax range from the recent three-hour Prometheus window. It differs from the VM-specific training scalers and can map a given value differently. `model/live_adaptive_update.py` instead uses the VM 1 training scaler when preparing update data. These are prototype assumptions, not a validated transfer-learning strategy.
+
+## LSTM Model and Training
+
+The saved baseline model configuration and `model/train_lstm.py` describe this network:
+
+| Layer | Configuration |
+|---|---|
+| Input | 12 time steps × 3 features |
+| LSTM | 64 units, tanh activation |
+| Dropout | 0.2 |
+| Dense | 32 units, ReLU |
+| Output Dense | 3 linear outputs |
+
+The saved `best_lstm.keras` configuration confirms the input shape and layer sizes. The trainable parameter count is **19,587**, calculated from the serialized architecture: 17,408 in the LSTM, 2,080 in the 64-to-32 Dense layer, and 99 in the 32-to-3 output layer. The former README's 58,763 value was incorrect.
+
+`train_lstm.py` compiles with Adam, mean squared error loss, and MAE metric. It calls `fit` for up to 30 epochs with batch size 128 and the validation arrays, using early stopping on `val_loss` with patience 5 and restored best weights. A `ModelCheckpoint` saves the best validation-loss model. The script also saves the final epoch model separately. The test arrays are loaded and printed by the training script, but are not passed to `fit`.
+
+Saved model files:
+
+| File | Role indicated by source |
+|---|---|
+| `model/best_lstm.keras` | Best validation-loss checkpoint from baseline training; used by evaluation and model comparison. |
+| `model/lstm_model.keras` | Final model saved after the training call completes. |
+| `model/adaptive_lstm.keras` | Baseline model fine-tuned for five epochs on the final 20% of validation arrays; updated with Adam learning rate 0.0001 and no shuffling. |
+| `model/live_adaptive_lstm.keras` | Model file used by the live scaling controller and written by the separate live update script. The update script queries Prometheus and uses the VM 1 scaler. |
+
+The validation-window update is a fine-tuning experiment, not continuous online learning. The live update script is a distinct, optional experiment and inherits the CPU-unit and normalization caveats above.
+
+## Experimental Results
+
+### Baseline test-set prediction errors
+
+The table below is recomputed from the checked-in `dataset/processed/test_predictions.csv` using its stored actual and predicted columns. It is a metric calculation over saved predictions; model inference was **not rerun** for this documentation update.
+
+| Resource | MAE | RMSE |
+|---|---:|---:|
+| CPU (`CPU usage [%]`) | 0.278457 percentage points | 2.698687 percentage points |
+| Memory (`KB`) | 48,832.527654 KB | 465,576.861824 KB |
+| Network (`KB/s`) | 11.400738 KB/s | 93.652781 KB/s |
+
+The test file has 21,844 rows. These errors describe the saved test predictions under the historical per-VM evaluation scalers; they do not measure live Kubernetes forecasting performance.
+
+### Offline reactive-versus-predictive threshold comparison
+
+`scaling/reactive_vs_predictive.py` applies a **65% CPU threshold** to actual CPU for the reactive label and predicted CPU for the predictive label. The saved `scaling/reactive_vs_predictive_results.csv` supports this decision table:
+
+| Reactive decision | Predictive KEEP | Predictive SCALE UP |
+|---|---:|---:|
+| KEEP | 21,737 | 4 |
+| SCALE UP | 37 | 66 |
+
+There are 21,844 rows and 21,803 matching decisions, for **99.81% decision agreement**. The reactive rule labels 103 samples SCALE UP; the predictive rule labels 70. This is threshold-decision agreement, not prediction accuracy. Since KEEP dominates the data, the high agreement should not be interpreted as strong evidence of useful scale-up detection or improved autoscaling. The comparison is offline and does not test service latency, resource efficiency, cost, or live cluster outcomes.
+
+### Fine-tuned model metrics not independently reproduced
+
+`model/compare_models.py` computes baseline and `adaptive_lstm.keras` overall normalized MAE/RMSE from `X_test.npy` and `y_test.npy`. It prints these values but does not persist a comparison-results artifact. The previously stated overall normalized values (baseline MAE/RMSE 0.006441/0.169601; fine-tuned 0.005036/0.169636) were **not independently reproduced during this README audit** and are not presented here as verified results. Re-run the comparison script in an environment with the project's TensorFlow and scikit-learn dependencies to regenerate them.
+
+## Experimental Visualizations
+
+These are generated plots, not screenshots of the running application. Paths are relative to the repository root.
+
+### CPU actual vs. predicted
+
+![CPU actual and predicted values](graphs/cpu_actual_vs_predicted.png)
+
+Compares saved CPU observations and predictions across the plotted test window. Historical CPU percentage semantics apply; see the live CPU units limitation above.
+
+### Memory actual vs. predicted
+
+![Memory actual and predicted values](graphs/memory_actual_vs_predicted.png)
+
+Compares actual and forecast memory values in the historical test data, expressed in KB.
+
+### Network actual vs. predicted
+
+![Network actual and predicted values](graphs/network_actual_vs_predicted.png)
+
+Compares actual and forecast combined network throughput in the historical test data, expressed in KB/s.
+
+### Reactive vs. predictive CPU-threshold comparison
+
+![Reactive and predictive CPU threshold comparison](graphs/reactive_vs_predictive.png)
+
+Plots actual and predicted CPU values for the first 100 test samples against the 65% threshold used by the offline decision comparison.
+
+### Review 3: CPU decision window
+
+![Review 3 CPU window visualization](graphs/review3_cpu_window.png)
+
+Shows the selected CPU window used in the Review 3 analysis. It is an experimental visualization, not an application screenshot or a live-cluster benchmark.
+
+### Review 3: decision matrix
+
+![Review 3 decision matrix](graphs/review3_decision_matrix.png)
+
+Visualizes the Review 3 reactive/predictive decision counts. Interpret it as an offline threshold comparison, not as model prediction accuracy.
+
+## Installation and Setup (Windows)
 
 ### Prerequisites
 
-Install or configure the following:
+- 64-bit Windows and Python 3.9–3.12 for the current TensorFlow pip installation guidance; Python 3.12 is also the version in the app container image.
+- Git and PowerShell.
+- Docker Desktop using Linux containers for the sample Flask app.
+- For the cluster demonstration: Minikube, `kubectl`, and a working Minikube driver.
+- For live prediction/scaling: a running Prometheus server at `http://localhost:9090` with the queried container metrics and labels available. Prometheus scrape configuration is not included here.
 
-- Python
-- Required Python libraries
-- Docker
-- Kubernetes / Minikube
-- Prometheus
-- Grafana
-- kubectl
+For CPU-only model work, TensorFlow's current installation guidance supports a Windows-native pip package. TensorFlow GPU support on native Windows stopped after 2.10; use WSL2 for current GPU-supported TensorFlow setups. See the [official TensorFlow pip installation guide](https://www.tensorflow.org/install/pip).
 
-### Step 1: Clone the Repository
+### Create an environment and install dependencies
 
-```bash
-git clone https://github.com/YOUR_USERNAME/predictive-container-autoscaling.git
+Run these commands from the repository root:
+
+```powershell
+cd C:\path\to\predictive-container-autoscaling
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install numpy pandas scikit-learn joblib matplotlib requests tensorflow
 ```
 
-```bash
-cd predictive-container-autoscaling
+The analytics dependencies above match imports used by the source. Their versions are not locked by the repository. If PowerShell blocks activation, use the process-scoped policy for the current terminal or activate the environment using the appropriate organization policy; do not change machine-wide policy solely for this project.
+
+For the sample web app, install its pinned dependency separately if running it outside Docker:
+
+```powershell
+python -m pip install -r app\requirements.txt
 ```
 
-### Step 2: Create a Virtual Environment
+### Rebuild data, train, and evaluate
 
-```bash
-python -m venv .venv
+The ten raw CSV inputs are already included. From the repository root:
+
+```powershell
+python preprocessing\preprocess.py
+python preprocessing\prepare_sequences.py
+python model\train_lstm.py
+python model\evaluate_lstm.py
 ```
 
-Activate it on Windows:
+These scripts generate or overwrite the clean dataset, processed arrays/scalers, model artifacts, and `dataset/processed/test_predictions.csv` as described above. Training/evaluation may take substantial time and memory.
 
-```bash
-.venv\Scripts\activate
+Optional experiments, also from the repository root:
+
+```powershell
+python model\adaptive_update.py
+python model\compare_models.py
+python scaling\scaling_decision.py
+python scaling\reactive_vs_predictive.py
+python graphs\plot_predictions.py
 ```
 
-### Step 3: Install Dependencies
+These scripts write or overwrite result CSVs, models, or PNGs where their source specifies. `compare_models.py` prints metrics and has no saved comparison-summary file.
 
-Install the dependencies required by the project:
+### Live monitoring and scaling prerequisites
 
-```bash
-pip install pandas numpy scikit-learn tensorflow joblib matplotlib
+The repository does not include a Prometheus installation, scrape configuration, or Grafana dashboard. Configure Prometheus separately so it can query container CPU, memory, and network metrics for Pods matching `predictive-app-.*` in namespace `default`, and make its API reachable at the URL used in the scripts. `monitoring/prometheus_reader.py` and `monitoring/live_prediction.py` require this external setup.
+
+`scaling/auto_scaler.py` can change a Kubernetes Deployment replica count by calling `kubectl scale`. Review its Prometheus URL, namespace, Deployment name, thresholds, and replica safeguards before running it against any cluster. It runs as a one-shot script and is not enabled as a Kubernetes controller/continuous service by these manifests.
+
+## Docker: build and run the sample application
+
+From the repository root, the Docker build context must be `app/` because the Dockerfile copies `app.py` and `requirements.txt` from its context:
+
+```powershell
+docker build -t predictive-autoscaling-app:latest -f app/Dockerfile app
+docker run --rm -p 5000:5000 --name predictive-app predictive-autoscaling-app:latest
 ```
 
-Install any additional dependencies required by the application and monitoring controller.
+In another PowerShell window, check the health endpoint:
 
-### Step 4: Prepare the Dataset
-
-Place the selected raw workload CSV files in:
-
-```text
-dataset/raw/
+```powershell
+Invoke-WebRequest http://localhost:5000/health
 ```
 
-Run:
+The app also serves `/` and reports its container hostname. Stop the foreground container with `Ctrl+C`.
 
-```bash
-python preprocessing/preprocess.py
+## Kubernetes / Minikube deployment
+
+The included manifests deploy only the Flask sample app. From the repository root, with Docker Desktop, Minikube, and `kubectl` installed:
+
+```powershell
+minikube start --driver=docker
+docker build -t predictive-autoscaling-app:latest -f app/Dockerfile app
+minikube image load predictive-autoscaling-app:latest
+kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
+kubectl rollout status deployment/predictive-app -n default
+kubectl get deployments,pods,services -n default
+minikube service predictive-app-service -n default --url
 ```
 
-Then generate the training, validation, and test sequences:
+The image tag matches `k8s/deployment.yaml`, which sets `imagePullPolicy: Never`; loading the locally built image into Minikube is therefore required. The commands follow Minikube's [image-loading guidance](https://minikube.sigs.k8s.io/docs/handbook/pushing/) and Kubernetes' [`kubectl apply` reference](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_apply/).
 
-```bash
-python preprocessing/prepare_sequences.py
+To remove only these sample application resources after the demonstration:
+
+```powershell
+kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml
 ```
 
-### Step 5: Train the LSTM Model
+Prometheus and Grafana are not deployed by these YAML files. Live monitoring/scaling requires separate Prometheus setup, metrics compatible with the scripts' queries, and a working `kubectl` context. The sample manifests alone do not configure or validate the scaler.
 
-```bash
-python model/train_lstm.py
-```
+## Screenshots and Visual Demonstrations
 
-### Step 6: Evaluate the Model
+The PNGs above are generated experimental charts. They are not screenshots of the Flask application, Prometheus, Grafana, Minikube, or a Kubernetes dashboard. No genuine application/runtime screenshots are currently included in this repository.
 
-```bash
-python model/evaluate_lstm.py
-```
-
-### Step 7: Run the Fine-Tuning Experiment
-
-```bash
-python model/adaptive_update.py
-```
-
-### Step 8: Compare the Models
-
-```bash
-python model/compare_models.py
-```
-
-### Step 9: Configure Kubernetes and Monitoring
-
-Configure Docker, Minikube, Kubernetes Deployment and Service resources, Prometheus, and Grafana according to the configuration files included in the repository.
-
-The live controller requires a running application, accessible Prometheus metrics, the trained model, and the required Kubernetes permissions.
-
-**Note:** These commands describe the main pipeline. Verify the project paths, dependencies, model locations, and configuration settings before execution. Live scaling should only be enabled in a controlled test environment.
-
----
+For a future visual walkthrough, capture the running Flask `/` and `/health` pages, the Minikube Service response, and (if configured separately) actual Prometheus/Grafana views. Label each capture with the environment and avoid presenting a chart as a live application screenshot.
 
 ## Limitations
 
-1. The historical dataset contains duplicate records and irregular timestamp intervals.
-2. Twelve observations do not always represent a fixed time duration.
-3. The LSTM output layer can generate invalid resource values, such as negative predictions or CPU predictions above 100%.
-4. Fine-tuning results are mixed, with MAE improving while RMSE increases slightly.
-5. The current fine-tuning mechanism is not continuous online learning.
-6. The live controller uses a recent-window scaler, which differs from the VM-specific scalers used during historical training.
-7. The reported 99.81% agreement comes from a separate offline CPU-only threshold comparison.
-8. More controlled experiments are required to establish live performance, cost savings, and generalization to different workloads.
-9. The implementation is a local Kubernetes prototype and requires further validation in production environments.
+- The raw trace contains duplicate records and irregular timestamp intervals; preprocessing sorts but does not deduplicate or resample it.
+- Twelve observations do not necessarily span a fixed time interval.
+- Historical Bitbrains CPU utilization percentage and live Prometheus `rate(...)*100` (percent of one CPU core) are not guaranteed to have equivalent units or denominators.
+- Live scaling uses a recent-window scaler rather than the training pipeline's VM-specific scalers; the live update script uses the VM 1 scaler.
+- The LSTM output layer is linear. Historical evaluation can yield out-of-range predictions; the live scaler clips normalized predictions to [0, 1] and then floors inverse-transformed values at zero, but this does not resolve units or workload-distribution differences.
+- The saved offline CPU threshold comparison is dominated by KEEP decisions and does not measure the quality of live scaling actions.
+- No Prometheus/Grafana deployment configuration, dashboard, automated test suite, or production benchmark is included in the project files.
+- Analytics dependencies are not pinned in a project-wide requirements file, so recreating the exact training environment may require dependency/version investigation.
+
+## Future Enhancements
+
+These are proposed improvements, not implemented project features:
+
+- Define and consistently apply CPU utilization units and denominator across training and live monitoring.
+- Use a training-fitted, versioned scaler or a validated domain-adaptation process for live data.
+- Deduplicate and resample traces to a documented time interval; record the actual elapsed duration represented by each sequence.
+- Add a pinned analytics requirements file and reproducible environment setup.
+- Add Prometheus scrape manifests/configuration and a Grafana dashboard, with deployment instructions matched to the target cluster.
+- Run controlled load tests and report prediction error, scale-up detection, response time, resource utilization, replica changes, and application service quality.
+- Compare with Kubernetes HPA and evaluate the value of the predictive policy against a fixed reactive baseline.
+- Add tests for preprocessing, metric conversion, scaling decisions, and replica safeguards before production use.
+
+## Contributors
+
+The repository's visible commit history identifies [@palurusasikiran-netizen](https://github.com/palurusasikiran-netizen) as the project uploader. No additional contributor names or affiliations are asserted here.
+
+## License
+
+No `LICENSE` file is currently provided. No license terms are claimed by this README. Contact the repository owner before reuse if you need permission or licensing clarification.
 
 ---
 
-## Future Scope
-
-The project can be extended in the following directions:
-
-- Improve data quality by handling duplicate records and irregular timestamps.
-- Use consistent timestamp intervals for time-series forecasting.
-- Align live normalization with the historical training pipeline.
-- Implement robust continuous online learning and workload-drift adaptation.
-- Apply output constraints to prevent physically invalid resource predictions.
-- Evaluate multi-resource scaling decisions under controlled workloads.
-- Compare the framework with Kubernetes Horizontal Pod Autoscaler (HPA).
-- Measure response time, resource utilization, replica changes, and application performance.
-- Investigate cloud cost optimization and energy-efficient autoscaling.
-- Evaluate the model on additional datasets and real-world workloads.
-
----
-
-## Conclusion
-
-This project demonstrates a prototype for adaptive predictive container autoscaling using deep learning and Kubernetes.
-
-By predicting CPU, memory, and network usage using an LSTM model, the framework aims to support proactive resource allocation instead of relying exclusively on current resource utilization.
-
-The integration of Docker, Kubernetes, Minikube, Prometheus, and Grafana demonstrates a monitoring-to-scaling workflow.
-
-The experimental results provide preliminary evidence of resource forecasting capability and model fine-tuning behavior. Further improvements and controlled live evaluations are required to establish the framework's effectiveness, reliability, and production readiness.
-
----
-
-## Project Information
-
-**Project Title:** An Adaptive Multi-Resource Deep Learning-Based Predictive Container Auto-Scaling Framework for Kubernetes
-
-**Domain:** Operating Systems, Cloud Computing, Container Orchestration, Deep Learning
-
-**Primary Model:** Long Short-Term Memory (LSTM)
-
-**Dataset:** GWA-T-12 Bitbrains fastStorage VM Workload Trace
-
-**Repository:** Add the GitHub repository URL here after creating the repository.
-
----
-
-## Acknowledgment
-
-We acknowledge the Grid Workloads Archive and the Bitbrains workload trace dataset providers for making historical VM workload data available for research and experimentation.
-
-
+**Repository:** [palurusasikiran-netizen/predictive-container-autoscaling](https://github.com/palurusasikiran-netizen/predictive-container-autoscaling)
